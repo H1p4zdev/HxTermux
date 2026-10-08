@@ -6,8 +6,12 @@ if ! command -v pkg >/dev/null; then
   exit 1
 fi
 
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-if [[ ! -f "$ROOT/main.go" || ! -d "$ROOT/.colorscheme" ]]; then
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+ROOT=""
+if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
+  ROOT="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+fi
+if [[ -z "$ROOT" || ! -f "$ROOT/main.go" || ! -d "$ROOT/.colorscheme" ]]; then
   ROOT="$HOME/.local/share/hxtermux/source"
   command -v git >/dev/null || pkg install -y git
   if [[ -d "$ROOT/.git" ]]; then
