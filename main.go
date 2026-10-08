@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -34,18 +35,18 @@ type component struct {
 	selected   bool
 }
 type model struct {
-	page                               page
-	width, height, cursor, theme, font int
-	components                         []component
-	status                             string
-	logs                               []string
-	err                                error
-	started                            bool
-	customizeOnly                      bool
-	spinner                            spinner.Model
-	backups                            []backupInfo
-	backupCursor                       int
-	operation                          string
+	page                                       page
+	width, height, cursor, theme, font, prompt int
+	components                                 []component
+	status                                     string
+	logs                                       []string
+	err                                        error
+	started                                    bool
+	customizeOnly                              bool
+	spinner                                    spinner.Model
+	backups                                    []backupInfo
+	backupCursor                               int
+	operation                                  string
 }
 type installMsg struct {
 	lines []string
@@ -64,6 +65,11 @@ type backupInfo struct {
 
 var themes = []string{"ayu-dark", "ayu-light", "ayu-mirage", "catppuccin", "dracula", "elementary", "everblush", "flat", "gruvbox-dark", "material-ocean", "material", "monokai-dark", "nekonako-djancoeg", "nekonako-hue", "nekonako-om-mar", "one-dark", "owl4ce-dark", "owl4ce-light", "siduck-onedark", "snazzy", "tomorrow-night", "tomorrow-night.eighties", "xshin"}
 var colors = []string{"#79c0ff", "#6c99bb", "#ffcc66", "#cba6f7", "#ff7b72", "#a6e3a1", "#a6e3a1", "#fab387", "#fab387", "#89b4fa", "#89b4fa", "#f5c2e7", "#fd6b85", "#fb749f", "#f7c35f", "#e5c07b", "#f38ba8", "#f38ba8", "#c678dd", "#f38ba8", "#7dcfff", "#7dcfff", "#50fa7b"}
+var promptThemes = []string{"ma", "ar-round", "archcraft", "la-round", "osx", "osx2", "rounded-custom", "rounded", "simple", "robbyrussell", "agnoster", "bira", "eastwood", "af-magic", "none"}
+
+//go:embed .colorscheme/*.colors
+var paletteFiles embed.FS
+
 var activeProgram *tea.Program
 var activeSnapshot string
 
@@ -82,14 +88,14 @@ func main() {
 	if *restore {
 		startPage = restoreListPage
 	}
-	theme, font := savedAppearance()
-	m := model{page: startPage, theme: theme, font: font, customizeOnly: !*setup, spinner: spinner.New(spinner.WithSpinner(spinner.Dot)), components: []component{
+	theme, font, prompt := savedAppearance()
+	m := model{page: startPage, theme: theme, font: font, prompt: prompt, customizeOnly: !*setup, spinner: spinner.New(spinner.WithSpinner(spinner.Dot)), components: []component{
 		{"Core shell tools", "git · curl · eza · fzf · lf · tmux · zsh · Termux:API", true},
 		{"HxTermux dotfiles", "Shell, terminal settings, aliases and helper scripts", true},
 		{"Zsh experience", "Oh My Zsh with autosuggestions and syntax highlighting", true},
 		{"HypexFetch", "Your animated Bubble Tea system fetch", true},
 		{"Awesomeshot", "Screenshot utility from its official Termux source branch", false},
-		{"Neovim starter", "NvChad starter configuration", false},
+		{"Neovim starter", "NvChad with Termux build tools and first-run plugin sync", false},
 	}}
 	if *restore {
 		m.backups, _ = listBackups(os.Getenv("HOME"))
@@ -103,19 +109,22 @@ func main() {
 	}
 }
 
-func savedAppearance() (int, int) {
-	themeIndex, fontIndex := 1, 0
+func savedAppearance() (int, int, int) {
+	themeIndex, fontIndex, promptIndex := 1, 0, 0
 	data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".config/hxtermux/preferences"))
 	if err != nil {
-		return themeIndex, fontIndex
+		return themeIndex, fontIndex, promptIndex
 	}
-	var themeName, fontName string
+	var themeName, fontName, promptName string
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, "theme=") {
 			themeName = strings.TrimPrefix(line, "theme=")
 		}
 		if strings.HasPrefix(line, "font=") {
 			fontName = strings.TrimPrefix(line, "font=")
+		}
+		if strings.HasPrefix(line, "prompt=") {
+			promptName = strings.TrimPrefix(line, "prompt=")
 		}
 	}
 	for i, theme := range themes {
@@ -130,14 +139,43 @@ func savedAppearance() (int, int) {
 			break
 		}
 	}
-	return themeIndex, fontIndex
+	for i, prompt := range promptThemes {
+		if prompt == promptName {
+			promptIndex = i
+			break
+		}
+	}
+	if promptName == "" {
+		if zshrc, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".zshrc")); err == nil {
+			for _, line := range strings.Split(string(zshrc), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "ZSH_THEME=") {
+					name := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "ZSH_THEME=")), "\"'")
+					if name == "" {
+						name = "none"
+					}
+					for i, prompt := range promptThemes {
+						if name == prompt {
+							promptIndex = i
+						}
+					}
+				}
+			}
+		}
+	}
+	return themeIndex, fontIndex, promptIndex
 }
 
 var fontNames = []string{"Fira Code Bold Nerd Font.ttf", "Fira Code Medium Nerd Font Complete Mono.ttf", "JetBrains Mono Bold Nerd Font Complete.ttf", "JetBrains Mono Medium Nerd Font Complete.ttf", "MesloLGS NF Bold Italic.ttf", "MesloLGS NF Bold.ttf", "MesloLGS NF Italic.ttf", "MesloLGS NF Regular.ttf"}
 
 func applyOnly(m model) tea.Cmd {
 	return func() tea.Msg {
-		err := applyAppearance("", os.Getenv("HOME"), m.theme, m.font)
+		err := applyAppearance("", os.Getenv("HOME"), m.theme, m.font, m.prompt)
+		if err == nil {
+			if _, statErr := os.Stat(filepath.Join(os.Getenv("HOME"), ".zshrc")); statErr == nil {
+				err = applyPromptTheme(os.Getenv("HOME"), promptThemes[m.prompt%len(promptThemes)])
+			}
+		}
 		if err != nil {
 			return installMsg{err: err}
 		}
@@ -198,17 +236,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "left", "h":
 				if m.cursor == 0 {
 					m.theme = (m.theme + len(themes) - 1) % len(themes)
-				} else {
+				} else if m.cursor == 1 {
 					m.font = (m.font + len(fontNames) - 1) % len(fontNames)
+				} else {
+					m.prompt = (m.prompt + len(promptThemes) - 1) % len(promptThemes)
 				}
 			case "right", "l":
 				if m.cursor == 0 {
 					m.theme = (m.theme + 1) % len(themes)
-				} else {
+				} else if m.cursor == 1 {
 					m.font = (m.font + 1) % len(fontNames)
+				} else {
+					m.prompt = (m.prompt + 1) % len(promptThemes)
 				}
-			case "up", "k", "down", "j":
-				m.cursor = (m.cursor + 1) % 2
+			case "tab", "down", "j":
+				m.cursor = (m.cursor + 1) % 3
+			case "shift+tab", "up", "k":
+				m.cursor = (m.cursor + 2) % 3
 			case "enter":
 				m.page = reviewPage
 			}
@@ -268,7 +312,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 func (m model) View() tea.View {
-	accent := lipgloss.Color(colors[m.theme%len(colors)])
+	accent := lipgloss.Color(themeAccent(m.theme))
 	title := lipgloss.NewStyle().Bold(true).Foreground(accent).Render("HXTERMUX  /  TERMUX SETUP")
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#8792a8"))
 	card := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#39445a")).Padding(1, 2)
@@ -291,23 +335,35 @@ func (m model) View() tea.View {
 		}
 		body += "\n" + muted.Render("↑/↓ move   Space select   Enter customize")
 	case customizePage:
-		headline := "Theme and font are applied after you confirm the installation."
+		headline := "Preview palette, font, and prompt, then confirm to apply."
 		if m.customizeOnly {
-			headline = "Preview a palette and font, then apply your changes."
+			headline = "Preview palette, font, and prompt, then apply your changes."
 		}
 		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Render("02  PERSONALIZE") + "\n" + headline + "\n\n"
-		for i, label := range []string{"Terminal palette", "Terminal font"} {
-			s := lipgloss.NewStyle().Foreground(lipgloss.Color("#dbe3f3"))
+		tabs := []string{"PALETTE", "FONT", "PROMPT"}
+		for i, tab := range tabs {
+			style := lipgloss.NewStyle().Foreground(lipgloss.Color("#8792a8")).Padding(0, 1)
 			if m.cursor == i {
-				s = s.Foreground(accent).Bold(true)
+				style = style.Foreground(lipgloss.Color("#0b0d12")).Background(accent).Bold(true)
 			}
-			value := themes[m.theme]
-			if i == 1 {
-				value = fontNames[m.font]
-			}
-			body += s.Render("◆  "+label) + "\n    " + lipgloss.NewStyle().Foreground(accent).Render(value) + "\n"
+			body += style.Render(tab)
 		}
-		body += "\n" + strings.Join([]string{lipgloss.NewStyle().Foreground(lipgloss.Color("#11131a")).Background(accent).Render("  "), lipgloss.NewStyle().Foreground(accent).Render("● ● ● ● ● ● ● ●")}, " ") + "\n\n" + muted.Render("↑/↓ choose field   ←/→ preview   Enter review   r restore")
+		value := themes[m.theme]
+		if m.cursor == 1 {
+			value = fontNames[m.font]
+		} else if m.cursor == 2 {
+			value = promptThemes[m.prompt]
+		}
+		body += "\n\n" + lipgloss.NewStyle().Foreground(accent).Bold(true).Render("‹  "+value+"  ›") + "\n"
+		if m.cursor == 0 {
+			body += "\n"
+			for i := 0; i < 16; i++ {
+				c := paletteColor(m.theme, fmt.Sprintf("color%d", i))
+				body += lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render("██")
+			}
+			body += "\n"
+		}
+		body += "\n" + muted.Render("Tab switch   ←/→ change   Enter review   r restore")
 	case reviewPage:
 		reviewTitle, reviewPrompt := "03  READY TO INSTALL", "Enter install   Backspace edit"
 		if m.customizeOnly {
@@ -319,7 +375,7 @@ func (m model) View() tea.View {
 				body += lipgloss.NewStyle().Foreground(accent).Render("✓  ") + c.name + "\n"
 			}
 		}
-		body += "\nPalette  " + lipgloss.NewStyle().Foreground(accent).Render(themes[m.theme]) + "\nFont     " + muted.Render(fontNames[m.font]) + "\n\n" + muted.Render(reviewPrompt)
+		body += "\nPalette  " + lipgloss.NewStyle().Foreground(accent).Render(themes[m.theme]) + "\nFont     " + muted.Render(fontNames[m.font]) + "\nPrompt   " + muted.Render(promptThemes[m.prompt]) + "\n\n" + muted.Render(reviewPrompt)
 	case installingPage:
 		heading, activity := "SETTING UP YOUR TERMUX", "Working through the selected components. This can take a few minutes."
 		if m.operation == "restore" {
@@ -335,8 +391,10 @@ func (m model) View() tea.View {
 	case finishedPage:
 		if m.operation == "restore" {
 			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Configuration restored.") + "\nThe current setup was saved as a safety snapshot before restoring.\n\n" + strings.Join(m.logs, "\n") + "\n\n" + muted.Render("Termux packages remain installed; configuration and HxTermux-managed files were restored.") + "\n\nEnter to close"
+		} else if m.customizeOnly {
+			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Appearance saved.") + "\nPalette and font are active now. Prompt changes load when Zsh starts.\n\n" + muted.Render("Run `exec zsh` to reload the prompt, or open a new Termux session.") + "\n\nEnter to close"
 		} else {
-			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Setup complete.") + "\nHxTermux is ready. Run `hxtermux` to reopen this studio or `hypexfetch` to see your fetch.\n\n" + muted.Render("Your selected terminal palette and font are now active.") + "\n\nEnter to close"
+			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Setup complete.") + "\nHxTermux is ready. Run `exec zsh` to start Zsh now, `hxtermux` to reopen this studio, or `hypexfetch` to see your fetch.\n\n" + muted.Render("Your selected terminal palette and font are now active.") + "\n\nEnter to close"
 		}
 	case restoreListPage:
 		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Render("RESTORE A CONFIGURATION") + "\nChoose a saved snapshot. Restoring also creates a snapshot of the current setup.\n\n"
@@ -378,11 +436,11 @@ func install(m model) tea.Cmd {
 			}
 		}
 		fail := func(e error) tea.Msg { return installMsg{lines, e} }
-		root, err := os.Getwd()
+		home := os.Getenv("HOME")
+		root, err := findSourceRoot(home)
 		if err != nil {
 			return fail(err)
 		}
-		home := os.Getenv("HOME")
 		prefix := os.Getenv("PREFIX")
 		if prefix == "" {
 			prefix = "/data/data/com.termux/files/usr"
@@ -430,7 +488,7 @@ func install(m model) tea.Cmd {
 		}
 		if selected["Zsh experience"] {
 			log("Installing Zsh and plugins")
-			if err = run("pkg", "install", "-y", "git", "zsh"); err != nil {
+			if err = run("pkg", "install", "-y", "git", "zsh", "termux-tools"); err != nil {
 				return fail(err)
 			}
 			if err = ensureRepoEntry("https://github.com/ohmyzsh/ohmyzsh.git", filepath.Join(home, ".oh-my-zsh"), "oh-my-zsh.sh"); err != nil {
@@ -450,6 +508,10 @@ func install(m model) tea.Cmd {
 				if err = ensureRepoEntry(p.u, filepath.Join(plugins, p.n), p.entry); err != nil {
 					return fail(err)
 				}
+			}
+			log("Setting Zsh as the Termux login shell")
+			if err = run("chsh", "-s", "zsh"); err != nil {
+				return fail(err)
 			}
 		}
 		if selected["HypexFetch"] {
@@ -480,8 +542,8 @@ func install(m model) tea.Cmd {
 			}
 		}
 		if selected["Neovim starter"] {
-			log("Installing Neovim and starter config")
-			if err = run("pkg", "install", "-y", "git", "neovim"); err != nil {
+			log("Installing Neovim and its plugin build tools")
+			if err = run("pkg", "install", "-y", "git", "neovim", "nodejs", "ripgrep", "unzip", "make", "clang"); err != nil {
 				return fail(err)
 			}
 			if _, e := os.Stat(filepath.Join(home, ".config/nvim")); e == nil {
@@ -489,12 +551,37 @@ func install(m model) tea.Cmd {
 					return fail(e)
 				}
 			}
-			if err = clone("https://github.com/NvChad/starter.git", filepath.Join(home, ".config/nvim")); err != nil {
+			nvimDir := filepath.Join(home, ".config/nvim")
+			if err = clone("https://github.com/NvChad/starter.git", nvimDir, "--depth=1"); err != nil {
 				return fail(err)
 			}
+			customConfig := filepath.Join(root, "optional/neovim-settings/xshin.lua")
+			if err = copyFile(customConfig, filepath.Join(nvimDir, "lua/configs/hxtermux.lua"), 0644); err != nil {
+				return fail(err)
+			}
+			initFile := filepath.Join(nvimDir, "init.lua")
+			initData, readErr := os.ReadFile(initFile)
+			if readErr != nil {
+				return fail(readErr)
+			}
+			if !strings.Contains(string(initData), `require "configs.hxtermux"`) {
+				initData = append(initData, []byte("\nrequire \"configs.hxtermux\"\n")...)
+				if err = os.WriteFile(initFile, initData, 0644); err != nil {
+					return fail(err)
+				}
+			}
+			log("Running the first NvChad plugin sync")
+			if err = run("nvim", "--headless", "+Lazy! sync", "+qa"); err != nil {
+				return fail(fmt.Errorf("Neovim first-run plugin sync failed: %w", err))
+			}
 		}
-		if err = applyAppearance(root, home, m.theme, m.font); err != nil {
+		if err = applyAppearance(root, home, m.theme, m.font, m.prompt); err != nil {
 			return fail(err)
+		}
+		if selected["Zsh experience"] {
+			if err = applyPromptTheme(home, promptThemes[m.prompt]); err != nil {
+				return fail(err)
+			}
 		}
 		log("Installing HxTermux command")
 		dest := filepath.Join(prefix, "bin/hxtermux")
@@ -509,6 +596,28 @@ func install(m model) tea.Cmd {
 		}
 		return installMsg{lines: append(lines, "All selected components installed"), err: nil}
 	}
+}
+
+func findSourceRoot(home string) (string, error) {
+	var candidates []string
+	if root := os.Getenv("HXTERMUX_SOURCE"); root != "" {
+		candidates = append(candidates, root)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, cwd)
+	}
+	candidates = append(candidates, filepath.Join(home, ".local/share/hxtermux/source"))
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Dir(executable))
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(filepath.Join(candidate, ".colorscheme")); err == nil {
+			if _, err = os.Stat(filepath.Join(candidate, ".fonts")); err == nil {
+				return candidate, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("HxTermux setup assets were not found; run install.sh from the HxTermux source folder or reinstall from the one-line installer")
 }
 
 func run(name string, args ...string) error {
@@ -932,7 +1041,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	return os.WriteFile(dst, a, mode.Perm())
 }
-func applyAppearance(root, home string, theme, font int) error {
+func applyAppearance(root, home string, theme, font, prompt int) error {
 	t := themes[theme%len(themes)]
 	fontName := fontNames[font%len(fontNames)]
 	assetRoot := root
@@ -953,7 +1062,7 @@ func applyAppearance(root, home string, theme, font int) error {
 	if e := copyFile(filepath.Join(fontDir, fontName), filepath.Join(dir, "font.ttf"), 0644); e != nil {
 		return e
 	}
-	prefs := fmt.Sprintf("theme=%s\nfont=%s\n", t, fontName)
+	prefs := fmt.Sprintf("theme=%s\nfont=%s\nprompt=%s\n", t, fontName, promptThemes[prompt%len(promptThemes)])
 	if e := os.MkdirAll(filepath.Join(home, ".config/hxtermux"), 0755); e != nil {
 		return e
 	}
@@ -965,3 +1074,71 @@ func applyAppearance(root, home string, theme, font int) error {
 	}
 	return nil
 }
+
+func applyPromptTheme(home, prompt string) error {
+	valid := false
+	for _, candidate := range promptThemes {
+		if candidate == prompt {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("unknown prompt theme %q", prompt)
+	}
+	path := filepath.Join(home, ".zshrc")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("cannot set the prompt theme before installing the Zsh experience: %w", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "ZSH_THEME=") {
+			if prompt == "none" {
+				lines[i] = `ZSH_THEME=""`
+			} else {
+				lines[i] = fmt.Sprintf("ZSH_THEME=%q", prompt)
+			}
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("could not find ZSH_THEME in %s", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), info.Mode().Perm())
+}
+
+func paletteColor(theme int, key string) string {
+	fallback := colors[theme%len(colors)]
+	name := themes[theme%len(themes)] + ".colors"
+	data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".local/share/hxtermux/themes", name))
+	if err != nil {
+		data, err = paletteFiles.ReadFile(filepath.Join(".colorscheme", name))
+	}
+	if err != nil {
+		return fallback
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		sep := strings.IndexAny(line, "=:")
+		if sep < 0 || strings.TrimSpace(line[:sep]) != key {
+			continue
+		}
+		value := strings.TrimSpace(line[sep+1:])
+		if len(value) == 7 && value[0] == '#' {
+			return value
+		}
+	}
+	return fallback
+}
+
+func themeAccent(theme int) string { return paletteColor(theme, "color4") }

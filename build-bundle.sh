@@ -19,7 +19,7 @@ mkdir -p "$APP"
 )
 
 for PATH_TO_BUNDLE in \
-  .aliases .autostart .colorscheme .config/lf .fonts .local .oh-my-zsh/custom/themes \
+  .aliases .autostart .colorscheme .config/lf .fonts .local .oh-my-zsh/custom/themes optional/neovim-settings/xshin.lua \
   .scripts .termux .tmux.conf .zshrc install.sh README.md LICENSE; do
   mkdir -p "$APP/$(dirname "$PATH_TO_BUNDLE")"
   cp -R "$ROOT/$PATH_TO_BUNDLE" "$APP/$PATH_TO_BUNDLE"
