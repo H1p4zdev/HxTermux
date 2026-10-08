@@ -12,7 +12,7 @@ if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
   ROOT="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
 fi
 if [[ -z "$ROOT" || ! -f "$ROOT/main.go" || ! -d "$ROOT/.colorscheme" ]]; then
-  ROOT="$HOME/.local/share/hxtermux/source"
+  ROOT="$HOME/.cache/hxtermux/source"
   command -v git >/dev/null || pkg install -y git
   if [[ -d "$ROOT/.git" ]]; then
     git -C "$ROOT" pull --ff-only origin main

@@ -820,7 +820,10 @@ func findSourceRoot(home string) (string, error) {
 	if cwd, err := os.Getwd(); err == nil {
 		candidates = append(candidates, cwd)
 	}
-	candidates = append(candidates, filepath.Join(home, ".local/share/hxtermux/source"))
+	candidates = append(candidates,
+		filepath.Join(home, ".cache/hxtermux/source"),
+		filepath.Join(home, ".local/share/hxtermux/source"),
+	)
 	if executable, err := os.Executable(); err == nil {
 		candidates = append(candidates, filepath.Dir(executable))
 	}
@@ -1186,9 +1189,11 @@ func copyDotfiles(root, home string) error {
 			continue
 		}
 		dst := filepath.Join(home, n)
-		if _, e := os.Stat(dst); e == nil {
-			if e = backup(dst); e != nil {
-				return e
+		if n != ".local" {
+			if _, e := os.Stat(dst); e == nil {
+				if e = backup(dst); e != nil {
+					return e
+				}
 			}
 		}
 		if e := copyPath(src, dst); e != nil {

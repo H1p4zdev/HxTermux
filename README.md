@@ -10,7 +10,7 @@ Inside Termux, run the one-line installer:
 curl -fsSL https://raw.githubusercontent.com/H1p4zdev/HxTermux/main/install.sh | bash
 ```
 
-It downloads HxTermux to `~/.local/share/hxtermux/source`, installs Git and Go if needed, and launches the setup wizard. You can also clone the repository and run `./install.sh` from its directory.
+It downloads HxTermux to `~/.cache/hxtermux/source`, installs Git and Go if needed, and launches the setup wizard. You can also clone the repository and run `./install.sh` from its directory.
 
 To build a compiled Termux bundle for ARM64, run `./build-bundle.sh`. It writes `dist/HxTermux-android-arm64.tar.gz` with both Go binaries and the setup assets. Extract it, enter the `HxTermux` directory, and run `./install.sh`; the bundle can install without Go.
 
