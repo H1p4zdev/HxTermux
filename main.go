@@ -433,15 +433,21 @@ func install(m model) tea.Cmd {
 			if err = run("pkg", "install", "-y", "git", "zsh"); err != nil {
 				return fail(err)
 			}
-			if err = clone("https://github.com/ohmyzsh/ohmyzsh.git", filepath.Join(home, ".oh-my-zsh")); err != nil {
+			if err = ensureRepoEntry("https://github.com/ohmyzsh/ohmyzsh.git", filepath.Join(home, ".oh-my-zsh"), "oh-my-zsh.sh"); err != nil {
 				return fail(err)
 			}
 			if err = copyDir(filepath.Join(root, ".oh-my-zsh/custom/themes"), filepath.Join(home, ".oh-my-zsh/custom/themes")); err != nil {
 				return fail(err)
 			}
 			plugins := filepath.Join(home, ".oh-my-zsh/custom/plugins")
-			for _, p := range []struct{ u, n string }{{"https://github.com/zsh-users/zsh-autosuggestions.git", "zsh-autosuggestions"}, {"https://github.com/zsh-users/zsh-syntax-highlighting.git", "zsh-syntax-highlighting"}, {"https://github.com/joshskidmore/zsh-fzf-history-search.git", "zsh-fzf-history-search"}, {"https://github.com/marlonrichert/zsh-autocomplete.git", "zsh-autocomplete"}} {
-				if err = clone(p.u, filepath.Join(plugins, p.n)); err != nil {
+			for _, p := range []struct{ u, n, entry string }{
+				{"https://github.com/zsh-users/zsh-autosuggestions.git", "zsh-autosuggestions", "zsh-autosuggestions.plugin.zsh"},
+				{"https://github.com/zsh-users/zsh-syntax-highlighting.git", "zsh-syntax-highlighting", "zsh-syntax-highlighting.plugin.zsh"},
+				{"https://github.com/joshskidmore/zsh-fzf-history-search.git", "zsh-fzf-history-search", "zsh-fzf-history-search.plugin.zsh"},
+				{"https://github.com/marlonrichert/zsh-autocomplete.git", "zsh-autocomplete", "zsh-autocomplete.plugin.zsh"},
+			} {
+				log("Initializing Zsh plugin repository: " + p.n)
+				if err = ensureRepoEntry(p.u, filepath.Join(plugins, p.n), p.entry); err != nil {
 					return fail(err)
 				}
 			}
@@ -540,6 +546,27 @@ func clone(url, dest string, args ...string) error {
 	a := append([]string{"clone"}, args...)
 	a = append(a, url, dest)
 	return run("git", a...)
+}
+
+// ensureRepoEntry initializes a repository when it is absent and checks that
+// an existing checkout contains the entrypoint expected by the shell setup.
+func ensureRepoEntry(url, dest, entry string) error {
+	entryPath := filepath.Join(dest, entry)
+	if info, err := os.Stat(entryPath); err == nil && !info.IsDir() {
+		return nil
+	}
+	if _, err := os.Stat(dest); err == nil {
+		if err = backup(dest); err != nil {
+			return err
+		}
+	}
+	if err := clone(url, dest, "--depth=1"); err != nil {
+		return err
+	}
+	if info, err := os.Stat(entryPath); err != nil || info.IsDir() {
+		return fmt.Errorf("plugin %s initialized without expected entrypoint %s", filepath.Base(dest), entry)
+	}
+	return nil
 }
 
 type snapshotEntry struct {

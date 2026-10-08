@@ -2,11 +2,11 @@ export ZSH=$HOME/.oh-my-zsh
 ZSH_THEME="ma"
 plugins=(
   git 
-  zsh-autosuggestions 
-  zsh-syntax-highlighting 
   bgnotify
   zsh-fzf-history-search
   zsh-autocomplete
+  zsh-autosuggestions
+  zsh-syntax-highlighting
 )
 
 PATH="$PREFIX/bin:$HOME/.local/bin:$PATH"
