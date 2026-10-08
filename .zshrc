@@ -12,12 +12,6 @@ plugins=(
 PATH="$PREFIX/bin:$HOME/.local/bin:$PATH"
 export PATH
 
-LINK="https://github.com/mayTermux"
-export LINK
-
-LINK_SSH="git@github.com:mayTermux"
-export LINK_SSH
-
 export TERM=xterm-256color 
 
 source $ZSH/oh-my-zsh.sh

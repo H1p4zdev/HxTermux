@@ -24,9 +24,9 @@ echo -e "\e[4 q"
 
 #fi
 
-#neo
-#clear
-rxfetch
+if command -v hypexfetch >/dev/null 2>&1; then
+  hypexfetch
+fi
 
 # SSH for Git & GitHub!
 #SSH_ENV="${HOME}/.ssh/agent-environment"

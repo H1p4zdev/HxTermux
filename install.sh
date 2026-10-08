@@ -1,40 +1,18 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-HELPERS=(
-  colors animation banner package switchcase
-  dotfiles clone themes nvchad utility
-  stat signal screen cursor finish
-)
-
-for HELPER in ${HELPERS[@]}; do
-  source $(pwd)/helper/${HELPER}.sh
-done
-
-function main() {
-
-  trap 'handleInterruptByUser "Interrupt by User"' 2
-
-  clear
-  banner
-
-  packages
-  switchCase "Install" "Packages" installPackages
-
-  dotFiles
-  backupDotFiles
-  switchCase "Install" "Dotfiles" installDotFiles
-
-  repositories
-  switchCase "Clone" "Repositories" cloneRepository
-
-  zshTheme
-  switchCase "Install" "ZSH Themes" installZshTheme
-
-  NvChad
-  utility
-
-  mainAlert
-
-}
-
-screenSize main
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! command -v pkg >/dev/null 2>&1; then
+  printf 'HxTermux setup must run inside Termux.\n' >&2
+  exit 1
+fi
+cd "$ROOT"
+if [[ -x "$ROOT/hxtermux" ]]; then
+  exec "$ROOT/hxtermux" --setup
+fi
+if ! command -v go >/dev/null 2>&1; then
+  printf 'Installing Go for the HxTermux setup interface…\n'
+  pkg update -y && pkg install -y golang
+fi
+cd "$ROOT"
+go run . --setup
