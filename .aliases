@@ -2,6 +2,7 @@
 alias hx='hxtermux --customize'
 alias hxrestore='hxtermux --restore'
 alias fetch='hypexfetch'
+alias hxf='hypexfetch'
 
 # Navigation and terminal
 alias q='exit'

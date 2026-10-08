@@ -35,24 +35,32 @@ type component struct {
 	selected   bool
 }
 type model struct {
-	page                                       page
-	width, height, cursor, theme, font, prompt int
-	components                                 []component
-	status                                     string
-	logs                                       []string
-	err                                        error
-	started                                    bool
-	customizeOnly                              bool
-	spinner                                    spinner.Model
-	backups                                    []backupInfo
-	backupCursor                               int
-	operation                                  string
+	page                                                    page
+	width, height, cursor, theme, font, prompt, promptField int
+	components                                              []component
+	status                                                  string
+	logs                                                    []string
+	err                                                     error
+	started                                                 bool
+	customizeOnly                                           bool
+	editingHost                                             bool
+	fontPreviewed                                           bool
+	host                                                    string
+	initialFont                                             int
+	spinner                                                 spinner.Model
+	backups                                                 []backupInfo
+	backupCursor                                            int
+	operation                                               string
 }
 type installMsg struct {
 	lines []string
 	err   error
 }
 type statusMsg string
+type fontPreviewMsg struct {
+	err  error
+	quit bool
+}
 type backupInfo struct {
 	ID, Kind    string
 	Created     time.Time
@@ -88,14 +96,20 @@ func main() {
 	if *restore {
 		startPage = restoreListPage
 	}
-	theme, font, prompt := savedAppearance()
-	m := model{page: startPage, theme: theme, font: font, prompt: prompt, customizeOnly: !*setup, spinner: spinner.New(spinner.WithSpinner(spinner.Dot)), components: []component{
+	setupMarker := filepath.Join(os.Getenv("HOME"), ".config/hxtermux/setup-complete")
+	_, setupErr := os.Stat(setupMarker)
+	setupComplete := setupErr == nil
+	if !*setup && !*restore && !setupComplete {
+		startPage = welcome
+	}
+	theme, font, prompt, host := savedAppearance()
+	m := model{page: startPage, theme: theme, font: font, prompt: prompt, host: host, initialFont: font, customizeOnly: !*setup && setupComplete, spinner: spinner.New(spinner.WithSpinner(spinner.Dot)), components: []component{
 		{"Core shell tools", "git · curl · eza · fzf · lf · tmux · zsh · Termux:API", true},
 		{"HxTermux dotfiles", "Shell, terminal settings, aliases and helper scripts", true},
 		{"Zsh experience", "Oh My Zsh with autosuggestions and syntax highlighting", true},
 		{"HypexFetch", "Your animated Bubble Tea system fetch", true},
-		{"Awesomeshot", "Screenshot utility from its official Termux source branch", false},
-		{"Neovim starter", "NvChad with Termux build tools and first-run plugin sync", false},
+		{"Awesomeshot", "Screenshot utility from its official Termux source branch", true},
+		{"Neovim starter", "NvChad with Termux build tools and first-run plugin sync", true},
 	}}
 	if *restore {
 		m.backups, _ = listBackups(os.Getenv("HOME"))
@@ -109,11 +123,12 @@ func main() {
 	}
 }
 
-func savedAppearance() (int, int, int) {
+func savedAppearance() (int, int, int, string) {
 	themeIndex, fontIndex, promptIndex := 1, 0, 0
+	host := ""
 	data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".config/hxtermux/preferences"))
 	if err != nil {
-		return themeIndex, fontIndex, promptIndex
+		return themeIndex, fontIndex, promptIndex, host
 	}
 	var themeName, fontName, promptName string
 	for _, line := range strings.Split(string(data), "\n") {
@@ -125,6 +140,9 @@ func savedAppearance() (int, int, int) {
 		}
 		if strings.HasPrefix(line, "prompt=") {
 			promptName = strings.TrimPrefix(line, "prompt=")
+		}
+		if strings.HasPrefix(line, "host=") {
+			host = strings.TrimPrefix(line, "host=")
 		}
 	}
 	for i, theme := range themes {
@@ -163,17 +181,17 @@ func savedAppearance() (int, int, int) {
 			}
 		}
 	}
-	return themeIndex, fontIndex, promptIndex
+	return themeIndex, fontIndex, promptIndex, host
 }
 
 var fontNames = []string{"Fira Code Bold Nerd Font.ttf", "Fira Code Medium Nerd Font Complete Mono.ttf", "JetBrains Mono Bold Nerd Font Complete.ttf", "JetBrains Mono Medium Nerd Font Complete.ttf", "MesloLGS NF Bold Italic.ttf", "MesloLGS NF Bold.ttf", "MesloLGS NF Italic.ttf", "MesloLGS NF Regular.ttf"}
 
 func applyOnly(m model) tea.Cmd {
 	return func() tea.Msg {
-		err := applyAppearance("", os.Getenv("HOME"), m.theme, m.font, m.prompt)
+		err := applyAppearance("", os.Getenv("HOME"), m.theme, m.font, m.prompt, m.host)
 		if err == nil {
 			if _, statErr := os.Stat(filepath.Join(os.Getenv("HOME"), ".zshrc")); statErr == nil {
-				err = applyPromptTheme(os.Getenv("HOME"), promptThemes[m.prompt%len(promptThemes)])
+				err = applyPromptTheme(os.Getenv("HOME"), promptThemes[m.prompt%len(promptThemes)], m.host)
 			}
 		}
 		if err != nil {
@@ -182,6 +200,36 @@ func applyOnly(m model) tea.Cmd {
 		return installMsg{lines: []string{"Appearance saved"}}
 	}
 }
+
+func validHostRune(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.'
+}
+
+func previewFont(index int) tea.Cmd {
+	return func() tea.Msg {
+		home := os.Getenv("HOME")
+		font := fontNames[index%len(fontNames)]
+		source := filepath.Join(home, ".local/share/hxtermux/fonts", font)
+		if err := copyFile(source, filepath.Join(home, ".termux/font.ttf"), 0644); err != nil {
+			return fontPreviewMsg{err: fmt.Errorf("font preview failed: %w", err)}
+		}
+		if command, err := exec.LookPath("termux-reload-settings"); err == nil {
+			if err = exec.Command(command).Run(); err != nil {
+				return fontPreviewMsg{err: fmt.Errorf("could not reload the font preview: %w", err)}
+			}
+		}
+		return fontPreviewMsg{}
+	}
+}
+
+func restoreFontPreview(index int) tea.Cmd {
+	return func() tea.Msg {
+		msg := previewFont(index)().(fontPreviewMsg)
+		msg.quit = true
+		return msg
+	}
+}
+
 func (m model) Init() tea.Cmd { return m.spinner.Tick }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
@@ -191,9 +239,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logs = v.lines
 		m.err = v.err
 		if v.err == nil {
-			m.page = finishedPage
+			switch m.operation {
+			case "setup":
+				m.page = customizePage
+				m.customizeOnly = true
+				m.initialFont = m.font
+				m.fontPreviewed = false
+				m.status = ""
+			case "exit":
+				return m, tea.Quit
+			default:
+				m.page = finishedPage
+			}
 		} else {
+			if m.operation == "exit" {
+				return m, tea.Quit
+			}
 			m.status = v.err.Error()
+		}
+		return m, nil
+	case fontPreviewMsg:
+		if v.err != nil {
+			m.status = v.err.Error()
+		} else {
+			m.status = ""
+		}
+		if v.quit {
+			return m, tea.Quit
 		}
 		return m, nil
 	case statusMsg:
@@ -208,8 +280,82 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.KeyPressMsg:
 		key := v.String()
+		if m.editingHost {
+			switch key {
+			case "ctrl+c":
+				m.editingHost = false
+				if m.fontPreviewed {
+					m.font = m.initialFont
+					m.operation = "exit"
+					return m, restoreFontPreview(m.initialFont)
+				}
+				return m, tea.Quit
+			case "enter", "esc":
+				m.editingHost = false
+			case "backspace", "delete":
+				if len(m.host) > 0 {
+					m.host = m.host[:len(m.host)-1]
+				}
+			default:
+				for _, r := range v.Text {
+					if validHostRune(r) && len(m.host) < 32 {
+						m.host += string(r)
+					}
+				}
+			}
+			return m, nil
+		}
 		if key == "ctrl+c" {
+			if m.editingHost {
+				m.editingHost = false
+			}
+			if m.fontPreviewed {
+				m.font = m.initialFont
+				m.operation = "exit"
+				return m, restoreFontPreview(m.initialFont)
+			}
 			return m, tea.Quit
+		}
+		if key == "q" {
+			if m.fontPreviewed {
+				m.font = m.initialFont
+				m.operation = "exit"
+				return m, restoreFontPreview(m.initialFont)
+			}
+			return m, tea.Quit
+		}
+		if key == "esc" {
+			switch m.page {
+			case welcome:
+				return m, tea.Quit
+			case componentsPage:
+				m.page = welcome
+			case customizePage:
+				m.page = finishedPage
+				if m.fontPreviewed {
+					m.font = m.initialFont
+					m.operation = "cancel-preview"
+					return m, previewFont(m.initialFont)
+				}
+			case restoreListPage:
+				m.page = customizePage
+			case restoreConfirmPage:
+				m.page = restoreListPage
+			case installingPage:
+				if m.err == nil {
+					return m, nil
+				}
+				if m.operation == "setup" {
+					m.page = componentsPage
+				} else {
+					m.page = customizePage
+				}
+				m.err = nil
+				m.status = ""
+			default:
+				return m, tea.Quit
+			}
+			return m, nil
 		}
 		switch m.page {
 		case welcome:
@@ -222,10 +368,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = (m.cursor + len(m.components) - 1) % len(m.components)
 			case "down", "j":
 				m.cursor = (m.cursor + 1) % len(m.components)
-			case " ":
-				m.components[m.cursor].selected = !m.components[m.cursor].selected
 			case "enter":
-				m.page = customizePage
+				m.page = installingPage
+				m.operation = "setup"
+				m.status = ""
+				return m, install(m)
 			}
 		case customizePage:
 			switch key {
@@ -238,7 +385,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.theme = (m.theme + len(themes) - 1) % len(themes)
 				} else if m.cursor == 1 {
 					m.font = (m.font + len(fontNames) - 1) % len(fontNames)
-				} else {
+					m.fontPreviewed = true
+					return m, previewFont(m.font)
+				} else if m.promptField == 0 {
 					m.prompt = (m.prompt + len(promptThemes) - 1) % len(promptThemes)
 				}
 			case "right", "l":
@@ -246,15 +395,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.theme = (m.theme + 1) % len(themes)
 				} else if m.cursor == 1 {
 					m.font = (m.font + 1) % len(fontNames)
-				} else {
+					m.fontPreviewed = true
+					return m, previewFont(m.font)
+				} else if m.promptField == 0 {
 					m.prompt = (m.prompt + 1) % len(promptThemes)
 				}
-			case "tab", "down", "j":
+			case "tab":
 				m.cursor = (m.cursor + 1) % 3
-			case "shift+tab", "up", "k":
+			case "shift+tab":
 				m.cursor = (m.cursor + 2) % 3
-			case "enter":
-				m.page = reviewPage
+			case "up", "k", "down", "j":
+				if m.cursor == 2 {
+					m.promptField = 1 - m.promptField
+				}
+			case "e":
+				if m.cursor == 2 && m.promptField == 1 {
+					m.editingHost = true
+				}
+			case "enter", "a":
+				m.page = installingPage
+				m.operation = "apply"
+				return m, applyOnly(m)
 			}
 		case reviewPage:
 			if key == "backspace" {
@@ -269,18 +430,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, install(m)
 			}
 		case installingPage:
-			if m.err != nil && key == "enter" {
+			if m.err != nil {
+				if key == "esc" {
+					m.err = nil
+					m.status = ""
+					if m.operation == "setup" {
+						m.page = componentsPage
+					} else {
+						m.page = customizePage
+					}
+					return m, nil
+				}
+				if key != "enter" {
+					break
+				}
 				if m.operation == "restore" {
 					m.page = restoreConfirmPage
+				} else if m.operation == "setup" {
+					m.page = componentsPage
 				} else {
-					m.page = reviewPage
+					m.page = customizePage
 				}
 				m.err = nil
 				m.status = ""
 			}
 		case restoreListPage:
 			switch key {
-			case "esc", "q":
+			case "esc":
 				m.page = customizePage
 			case "up", "k":
 				if len(m.backups) > 0 {
@@ -315,25 +491,24 @@ func (m model) View() tea.View {
 	accent := lipgloss.Color(themeAccent(m.theme))
 	title := lipgloss.NewStyle().Bold(true).Foreground(accent).Render("HXTERMUX  /  TERMUX SETUP")
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#8792a8"))
+	keyHint := func(key, action string) string {
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0b0d12")).Background(accent).Padding(0, 1).Render(key) + " " + muted.Render(action)
+	}
 	card := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#39445a")).Padding(1, 2)
 	var body string
 	switch m.page {
 	case welcome:
-		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f0f3fa")).Render("A considered Termux setup.") + "\nChoose your shell tools, shape the terminal, and install your HypexFetch build in one guided flow.\n\n" + muted.Render("Responsive Bubble Tea interface · review every choice before installation") + "\n\n" + lipgloss.NewStyle().Foreground(accent).Render("Enter  Begin setup")
+		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f0f3fa")).Render("A considered Termux setup.") + "\nInstall the complete HxTermux environment first. Personalize now or return to it later.\n\n" + keyHint("ENTER", "continue") + "   " + keyHint("Q / CTRL+C", "exit")
 	case componentsPage:
-		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Render("01  COMPONENTS") + "\nPick what belongs in your environment. Space toggles a component.\n\n"
+		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Render("01  FULL SETUP") + "\nAll components are required for the first setup. Personalization is available after installation or later with `hx`.\n\n"
 		for i, c := range m.components {
-			marker := "○"
-			if c.selected {
-				marker = "●"
-			}
 			s := lipgloss.NewStyle().Foreground(lipgloss.Color("#dbe3f3"))
 			if i == m.cursor {
 				s = s.Foreground(accent).Bold(true)
 			}
-			body += s.Render(marker+"  "+c.name) + "\n    " + muted.Render(c.desc) + "\n"
+			body += s.Render("✓  "+c.name) + "\n    " + muted.Render(c.desc) + "\n"
 		}
-		body += "\n" + muted.Render("↑/↓ move   Space select   Enter customize")
+		body += "\n" + keyHint("ENTER", "install all") + "   " + keyHint("ESC", "back") + "   " + keyHint("Q / CTRL+C", "exit")
 	case customizePage:
 		headline := "Preview palette, font, and prompt, then confirm to apply."
 		if m.customizeOnly {
@@ -352,9 +527,31 @@ func (m model) View() tea.View {
 		if m.cursor == 1 {
 			value = fontNames[m.font]
 		} else if m.cursor == 2 {
-			value = promptThemes[m.prompt]
+			if m.promptField == 0 {
+				value = promptThemes[m.prompt]
+			} else {
+				value = "PROMPT HOST"
+			}
 		}
 		body += "\n\n" + lipgloss.NewStyle().Foreground(accent).Bold(true).Render("‹  "+value+"  ›") + "\n"
+		if m.cursor == 1 {
+			body += lipgloss.NewStyle().Foreground(accent).Bold(true).Render("HxTermux  AaBb  012345") + "\n" + muted.Render("Font is reloaded in Termux as you browse.") + "\n"
+		}
+		if m.cursor == 2 {
+			host := m.host
+			if host == "" {
+				host = "system hostname"
+			}
+			label := lipgloss.NewStyle().Foreground(lipgloss.Color("#dbe3f3"))
+			if m.promptField == 1 {
+				label = label.Foreground(accent).Bold(true)
+			}
+			body += "\n" + label.Render("Enter user / prompt host") + "  " + lipgloss.NewStyle().Foreground(accent).Render(host)
+			if m.editingHost {
+				body += lipgloss.NewStyle().Foreground(accent).Render("▏")
+			}
+			body += "\n"
+		}
 		if m.cursor == 0 {
 			body += "\n"
 			for i := 0; i < 16; i++ {
@@ -363,7 +560,18 @@ func (m model) View() tea.View {
 			}
 			body += "\n"
 		}
-		body += "\n" + muted.Render("Tab switch   ←/→ change   Enter review   r restore")
+		body += "\n" + keyHint("TAB", "switch tab") + "   " + keyHint("←/→", "change")
+		if m.cursor == 2 && m.promptField == 1 {
+			if m.editingHost {
+				body += "   " + keyHint("TYPE", "host name") + "   " + keyHint("ENTER", "finish entry")
+			} else {
+				body += "   " + keyHint("E", "enter host")
+			}
+		}
+		body += "\n" + keyHint("ENTER / A", "apply") + "   " + keyHint("ESC", "back / skip") + "   " + keyHint("Q / CTRL+C", "exit")
+		if m.status != "" {
+			body += "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72")).Render(m.status)
+		}
 	case reviewPage:
 		reviewTitle, reviewPrompt := "03  READY TO INSTALL", "Enter install   Backspace edit"
 		if m.customizeOnly {
@@ -386,15 +594,17 @@ func (m model) View() tea.View {
 			body += "\n  " + lipgloss.NewStyle().Foreground(accent).Render("› ") + l
 		}
 		if m.status != "" {
-			body += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72")).Render(m.status+"\nEnter to return to review")
+			body += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72")).Render(m.status) + "\n" + keyHint("ENTER", "retry / continue") + "   " + keyHint("ESC", "back") + "   " + keyHint("Q / CTRL+C", "exit")
 		}
 	case finishedPage:
 		if m.operation == "restore" {
-			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Configuration restored.") + "\nThe current setup was saved as a safety snapshot before restoring.\n\n" + strings.Join(m.logs, "\n") + "\n\n" + muted.Render("Termux packages remain installed; configuration and HxTermux-managed files were restored.") + "\n\nEnter to close"
+			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Configuration restored.") + "\nThe current setup was saved as a safety snapshot before restoring.\n\n" + strings.Join(m.logs, "\n") + "\n\n" + muted.Render("Termux packages remain installed; configuration and HxTermux-managed files were restored.") + "\n\n" + keyHint("ENTER", "close") + "   " + keyHint("Q / CTRL+C", "exit")
+		} else if m.operation == "setup" {
+			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Setup complete.") + "\nHxTermux is ready. Run `exec zsh` to start Zsh now, `hx` to customize later, or `hxf` to see HypexFetch.\n\n" + muted.Render("Your selected terminal palette and font are now active.") + "\n\n" + keyHint("ENTER", "close") + "   " + keyHint("Q / CTRL+C", "exit")
 		} else if m.customizeOnly {
-			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Appearance saved.") + "\nPalette and font are active now. Prompt changes load when Zsh starts.\n\n" + muted.Render("Run `exec zsh` to reload the prompt, or open a new Termux session.") + "\n\nEnter to close"
+			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Appearance saved.") + "\nPalette and font are active now. Prompt changes load when Zsh starts.\n\n" + muted.Render("Run `exec zsh` to reload the prompt, or open a new Termux session.") + "\n\n" + keyHint("ENTER", "close") + "   " + keyHint("Q / CTRL+C", "exit")
 		} else {
-			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Setup complete.") + "\nHxTermux is ready. Run `exec zsh` to start Zsh now, `hxtermux` to reopen this studio, or `hypexfetch` to see your fetch.\n\n" + muted.Render("Your selected terminal palette and font are now active.") + "\n\nEnter to close"
+			body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Foreground(accent).Render("Setup complete.") + "\nHxTermux is ready. Run `exec zsh` to start Zsh now, `hx` to customize later, or `hxf` to see HypexFetch.\n\n" + muted.Render("Your selected terminal palette and font are now active.") + "\n\n" + keyHint("ENTER", "close") + "   " + keyHint("Q / CTRL+C", "exit")
 		}
 	case restoreListPage:
 		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Render("RESTORE A CONFIGURATION") + "\nChoose a saved snapshot. Restoring also creates a snapshot of the current setup.\n\n"
@@ -413,10 +623,10 @@ func (m model) View() tea.View {
 				body += style.Render(marker+b.ID) + "\n    " + muted.Render(detail) + "\n"
 			}
 		}
-		body += "\n" + muted.Render("↑/↓ select   Enter continue   Esc back")
+		body += "\n" + keyHint("↑/↓", "select") + "   " + keyHint("ENTER", "continue") + "   " + keyHint("ESC", "back") + "   " + keyHint("Q / CTRL+C", "exit")
 	case restoreConfirmPage:
 		b := m.backups[m.backupCursor]
-		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Render("CONFIRM RESTORE") + "\n\nRestore snapshot " + lipgloss.NewStyle().Foreground(accent).Bold(true).Render(b.ID) + "?\n\nThe current managed files will first be copied to a new safety snapshot.\nPackages will remain installed.\n\n" + lipgloss.NewStyle().Foreground(accent).Render("Enter restore   Esc cancel")
+		body = title + "\n\n" + lipgloss.NewStyle().Bold(true).Render("CONFIRM RESTORE") + "\n\nRestore snapshot " + lipgloss.NewStyle().Foreground(accent).Bold(true).Render(b.ID) + "?\n\nThe current managed files will first be copied to a new safety snapshot.\nPackages will remain installed.\n\n" + keyHint("ENTER", "restore") + "   " + keyHint("ESC", "back") + "   " + keyHint("Q / CTRL+C", "exit")
 	}
 	width := max(24, min(m.width-2, 86))
 	content := card.Width(max(18, width-8)).Render(body)
@@ -575,11 +785,11 @@ func install(m model) tea.Cmd {
 				return fail(fmt.Errorf("Neovim first-run plugin sync failed: %w", err))
 			}
 		}
-		if err = applyAppearance(root, home, m.theme, m.font, m.prompt); err != nil {
+		if err = applyAppearance(root, home, m.theme, m.font, m.prompt, m.host); err != nil {
 			return fail(err)
 		}
 		if selected["Zsh experience"] {
-			if err = applyPromptTheme(home, promptThemes[m.prompt]); err != nil {
+			if err = applyPromptTheme(home, promptThemes[m.prompt], m.host); err != nil {
 				return fail(err)
 			}
 		}
@@ -592,6 +802,10 @@ func install(m model) tea.Cmd {
 			err = runIn(root, "go", "build", "-o", dest, ".")
 		}
 		if err != nil {
+			return fail(err)
+		}
+		marker := filepath.Join(home, ".config/hxtermux/setup-complete")
+		if err = os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0644); err != nil {
 			return fail(err)
 		}
 		return installMsg{lines: append(lines, "All selected components installed"), err: nil}
@@ -1041,7 +1255,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	return os.WriteFile(dst, a, mode.Perm())
 }
-func applyAppearance(root, home string, theme, font, prompt int) error {
+func applyAppearance(root, home string, theme, font, prompt int, host string) error {
 	t := themes[theme%len(themes)]
 	fontName := fontNames[font%len(fontNames)]
 	assetRoot := root
@@ -1062,7 +1276,7 @@ func applyAppearance(root, home string, theme, font, prompt int) error {
 	if e := copyFile(filepath.Join(fontDir, fontName), filepath.Join(dir, "font.ttf"), 0644); e != nil {
 		return e
 	}
-	prefs := fmt.Sprintf("theme=%s\nfont=%s\nprompt=%s\n", t, fontName, promptThemes[prompt%len(promptThemes)])
+	prefs := fmt.Sprintf("theme=%s\nfont=%s\nprompt=%s\nhost=%s\n", t, fontName, promptThemes[prompt%len(promptThemes)], host)
 	if e := os.MkdirAll(filepath.Join(home, ".config/hxtermux"), 0755); e != nil {
 		return e
 	}
@@ -1075,7 +1289,7 @@ func applyAppearance(root, home string, theme, font, prompt int) error {
 	return nil
 }
 
-func applyPromptTheme(home, prompt string) error {
+func applyPromptTheme(home, prompt, host string) error {
 	valid := false
 	for _, candidate := range promptThemes {
 		if candidate == prompt {
@@ -1086,6 +1300,11 @@ func applyPromptTheme(home, prompt string) error {
 	if !valid {
 		return fmt.Errorf("unknown prompt theme %q", prompt)
 	}
+	for _, r := range host {
+		if !validHostRune(r) {
+			return fmt.Errorf("host name may only contain letters, numbers, dots, dashes, and underscores")
+		}
+	}
 	path := filepath.Join(home, ".zshrc")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1093,6 +1312,7 @@ func applyPromptTheme(home, prompt string) error {
 	}
 	lines := strings.Split(string(data), "\n")
 	found := false
+	hostFound := false
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "ZSH_THEME=") {
@@ -1103,15 +1323,26 @@ func applyPromptTheme(home, prompt string) error {
 			}
 			found = true
 		}
+		if strings.HasPrefix(trimmed, "export HXTERMUX_HOST=") {
+			lines[i] = "export HXTERMUX_HOST=" + shellQuote(host)
+			hostFound = true
+		}
 	}
 	if !found {
 		return fmt.Errorf("could not find ZSH_THEME in %s", path)
+	}
+	if !hostFound {
+		lines = append([]string{"export HXTERMUX_HOST=" + shellQuote(host)}, lines...)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), info.Mode().Perm())
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func paletteColor(theme int, key string) string {
